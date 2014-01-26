@@ -1,25 +1,27 @@
 class String
-  def read(c)
-    self.slice!(0...c)
+  def read(n)
+    self.slice!(0...n)
   end
-  def readh(c)
-    self.slice!(0...c).bytes {|ss| print "%02x "%ss}
+  def readh(n)
+    self.slice!(0...n).bytes {|ss| print "%02x "%ss}
+  end
+end
+class File
+  def readh(n)
+    self.read(n).bytes {|ss| Kernel.print "%02x "%ss}
   end
 end
 
 # Based on file format analysis
 # Refer from http://www.m2osw.com/swf_alexref
 class Hsalf
-  @b
-  @indent
-  
+  @f
   def initialize(filename, offset=0, size=0)
-    f = File.open(filename, "rb")
-    f.read(offset)
-    size = f.size if size == 0
-    @b = f.read(size)
-    @indent = -1
-    f.close
+    @f = File.open(filename, "rb")
+    @f.seek(offset, IO::SEEK_SET)
+    size = @f.size if size == 0
+    #@b = f.read(size-offset)
+    #@f.close
   end
   
   def readstr(s)
@@ -48,71 +50,128 @@ class Hsalf
     return data
   end
   
-  def np(s)
-    #puts ""
-    @indent.times {print "\t"}
-    p s
+  def disas(len)
+    ori = @f.tell
+    while @f.tell < ori+len
+      p decode(1)[0]
+    end
   end
-  def disas(b = @b)
-    @indent += 1
-    while b.length>0 do
-      @indent.times {print "\t"}
-      id = b.readh(1).ord
-      case id # Action identifier
-      when 0x0 then np "end"
-      when 0xa then np "add" # pop + pop => push
-      when 0xb then np "subtract" # pop - pop -> push
-      when 0xc then np "multiply" # pop * pop => push
-      when 0xe then np "equal" # pop == pop => push
-      when 0x12 then np "not" # ~pop => push
-      when 0x1c then np "getvariable" # *pop => push
-      when 0x1d then np "setvariable" # pop => *pop
-      when 0x3c then np "setlocalvariable" # pop => *pop
-      when 0x3d then np "call function" # pop(pop(argc): pops(argv)) => push
-      when 0x3e then np "return" # return pop | push(caller)
-      when 0x3f then np "modulo" # pop % pop => push
-      when 0x47 then np "add(type)" # pop + pop => push
-      when 0x88 # declare dictionary
-        dsize = b.readh(2).unpack('S<')[0]
-        data = b.readh(dsize)
-        dict = []
-        until data.length <= 0 do
-          dict += [readstr(data)]
+  
+  def debug(argv)
+    s = [] # stack
+    v = {} # variable
+    f = {} # function list
+    dict = [] # dictionary
+    loop do
+      a,i,d = decode(0)
+      if i[0].to_i == 2
+        o1 = s.pop
+        o2 = s.pop
+        case i[1]
+        when '+' then s.push(o1+o2)
+        when '-' then s.push(o1-o2)
+        when '*' then s.push(o1*o2)
+        when '%' then s.push(o1%o2)
+        when '=' then s.push((o1==o2)?1:0)
+        when ']' then v[o2]=o1
+        when 'c'
+          ra = @f.tell
+          @f.seek(f[o1], IO::SEEK_SET)
+          argv = s.pop(o2).reverse
+          puts "call"
+          s.push(debug(argv))
+          @f.seek(ra, IO::SEEK_SET)
         end
-        np "dict #{dict}"
-      when 0x96 # push data
-        dsize = b.readh(2).unpack('S<')[0]
-        data = readdata(b.readh(dsize))
-        np "push #{data}"
-      when 0x99 # branch always
-        dsize = b.readh(2).unpack('S<')[0]
-        puts "warning branch data size != 2" if dsize != 2
-        offset = b.readh(2).unpack('s<')[0]
-        np "branch off:#{offset}(#{offset.to_s(16)})"
-      when 0x9b  # declare function
-        dsize = b.readh(2).unpack('S<')[0]
-        d = b.readh(dsize)
-        fun_nm = readstr(d)
-        argc = d.read(2).unpack('S<')[0]
-        argv = []
-        argc.times{argv+=[readstr(d)]}
-        fun_len = d.read(2).unpack('S<')[0]
-        np "Func(#{fun_nm}), argc:#{argc}, fun_len:#{fun_len}"
-        disas(b.read(fun_len))
-      when 0x9d # branch If True / ip += pop
-        dsize = b.readh(2).unpack('S<')[0]
-        puts "warning branch data size != 2" if dsize != 2
-        offset = b.readh(2).unpack('s<')[0]
-        np "branch if True off:#{offset}(#{offset.to_s(16)})"
+      elsif i[0].to_i == 1
+        o1 = s.pop
+        case i[1]
+        when '~' then s.push(~o1)
+        when '[' then s.push(v[o1])
+        when 'r' then return o1
+        end
+      elsif i[0] == "e" # end
+        break
+      elsif i[0] == "d" # dictionary
+        dict += d
+      elsif i[0] == "b" # branch
+        if (i[1]=="a")or(i[1]=="t" && s.pop!=0)
+          d = d-1 if d<0
+          @f.seek(d, IO::SEEK_CUR)
+        end
+      elsif i[0] == "p" # push
+        s+=d
+      elsif i[0] == "f" # function declare
+        f[d[0]] = d[1] 
       else
-        puts "Unknown Action ID #{id}(#{id.to_s(16)})"
-        p b
+        p a
         exit
       end
-    end
-  @indent -= 1
+      p "#{a}:#{s}"
+    end # loop end
   end
-end
-
-f = Hsalf.new("")
-f.disas
+  
+  def decode(r)
+    #a:action i:intermidiate_language d:data
+    id = @f.readh(1).ord
+    case id # Action identifier
+    when 0x0 then a="end";i="e"
+    when 0xa then a="add";i="2+" # pop + pop => push
+    when 0xb then a="subtract";i="2-" # pop - pop -> push
+    when 0xc then a="multiply";i="2*" # pop * pop => push
+    when 0xe then a="equal";i="2=" # pop == pop => push
+    when 0x12 then a="not";i="1~" # ~pop => push
+    when 0x1c then a="getvariable";i="1[" # *pop => push
+    when 0x1d then a="setvariable";i="2]" # pop => *pop
+    when 0x3c then a="setlocalvariable";i="2]" # pop => *pop
+    when 0x3d then a="call function";i="2c" # pop(pop(argc): pops(argv)) => push
+    when 0x3e then a="return";i="1r" # return pop | push(caller)
+    when 0x3f then a="modulo";i="2%" # pop % pop => push
+    when 0x47 then a="add(type)";i="2+" # pop + pop => push
+    when 0x88 # declare dictionary
+      size = @f.readh(2).unpack('S<')[0]
+      chk = @f.readh(size)
+      d = []
+      until chk.length <= 0 do
+        d += [readstr(chk)]
+      end
+      a="dict #{d}";i="d"
+    when 0x96 # push data
+      size = @f.readh(2).unpack('S<')[0]
+      d = readdata(@f.readh(size))
+      a = "push #{d}"
+      i = "p"
+    when 0x99 # branch always
+      size = @f.readh(2).unpack('S<')[0]
+      puts "warning: branch data size != 2" if size != 2
+      d = @f.readh(2).unpack('s<')[0]
+      a = "branch always:#{d}(#{d.to_s(16)})"
+      i = "ba"
+    when 0x9b  # declare function
+      size = @f.readh(2).unpack('S<')[0]
+      chk = @f.readh(size)
+      fun_nm = readstr(chk)
+      argc = chk.read(2).unpack('S<')[0]
+      argv = []
+      argc.times{argv+=[readstr(chk)]}
+      fun_len = chk.read(2).unpack('S<')[0]
+      a = "Func(#{fun_nm}), argc:#{argc}, fun_len:#{fun_len}"
+      i = "f"
+      d = [fun_nm,@f.tell]
+      if r!=0
+        p "Func(#{fun_nm}), argc:#{argc}, fun_len:#{fun_len} <<"
+        disas(fun_len)
+      else
+        @f.seek(fun_len, IO::SEEK_CUR)
+      end
+    when 0x9d # branch If True / if(pop)
+      size = @f.readh(2).unpack('S<')[0]
+      puts "warning: branch data size != 2" if size != 2
+      d = @f.readh(2).unpack('s<')[0]
+      a = "branch if True off:#{d}(#{d.to_s(16)})"
+      i = "bt"
+    else
+      puts "Unknown Action ID #{id}(#{id.to_s(16)})"
+    end
+    return a,i,d
+  end #end method
+end #end class
