@@ -37,12 +37,30 @@ class Hsalf
       case type
       when 0 # string
         data += [readstr(d)]
-      when 5 # 1byte
+      when 1 # float
+        data += d.read(8).unpack('F')
+      when 2 # NULL
+        puts "[warning] readdata NULL: Not implemented"
+        data += [0] # or nil?
+      when 3 # undefined
+        puts "[warning] readdata undefined: Not implemented"
+        data += [nil]
+      when 4 # register
+        puts "[warning] readdata register: Not implemented"
         data += d.read(1).unpack('C')
-      when 6 # float
+      when 5 # 1byte bool
+        data += d.read(1).unpack('C')
+        data.map! {|d| d/d}
+      when 6 # double
         data += d.read(8).unpack('D')
-      when 7 # 4byte
+      when 7 # integer
         data += d.read(4).unpack('L<')
+      when 8 # dictionary
+        puts "[warning] readdata dictionary: Not implemented"
+        data += d.read(1).unpack('C')
+      when 9 # large dictionary
+        puts "[warning] readdata large dictionary: Not implemented"
+        data += d.read(2).unpack('S')
       else
         puts "Unknown Data Type #{type}(#{type.to_s(16)})"
       end
@@ -50,7 +68,7 @@ class Hsalf
     return data
   end
   
-  def disas(len)
+  def disas(len=@f.size)
     ori = @f.tell
     while @f.tell < ori+len
       p decode(1)[0]
@@ -68,11 +86,11 @@ class Hsalf
         o1 = s.pop
         o2 = s.pop
         case i[1]
-        when '+' then s.push(o1+o2)
-        when '-' then s.push(o1-o2)
-        when '*' then s.push(o1*o2)
-        when '%' then s.push(o1%o2)
-        when '=' then s.push((o1==o2)?1:0)
+        when '+' then s.push(o2+o1)
+        when '-' then s.push(o2-o1)
+        when '*' then s.push(o2*o1)
+        when '%' then s.push(o2%o1)
+        when '=' then s.push((o2==o1)? true:false)
         when ']' then v[o2]=o1
         when 'c'
           ra = @f.tell
@@ -80,12 +98,13 @@ class Hsalf
           argv = s.pop(o2).reverse
           puts "call"
           s.push(debug(argv))
+          puts "return"
           @f.seek(ra, IO::SEEK_SET)
         end
       elsif i[0].to_i == 1
         o1 = s.pop
         case i[1]
-        when '~' then s.push(~o1)
+        when '~' then s.push(not(o1))
         when '[' then s.push(v[o1])
         when 'r' then return o1
         end
@@ -94,7 +113,7 @@ class Hsalf
       elsif i[0] == "d" # dictionary
         dict += d
       elsif i[0] == "b" # branch
-        if (i[1]=="a")or(i[1]=="t" && s.pop!=0)
+        if (i[1]=="a")or(i[1]=="t" && s.pop==true)
           d = d-1 if d<0
           @f.seek(d, IO::SEEK_CUR)
         end
@@ -112,6 +131,8 @@ class Hsalf
   
   def decode(r)
     #a:action i:intermidiate_language d:data
+    #size:action length #chk:action structure
+    print "[#{@f.tell.to_s(16)}]"
     id = @f.readh(1).ord
     case id # Action identifier
     when 0x0 then a="end";i="e"
@@ -128,13 +149,17 @@ class Hsalf
     when 0x3f then a="modulo";i="2%" # pop % pop => push
     when 0x47 then a="add(type)";i="2+" # pop + pop => push
     when 0x88 # declare dictionary
+      STDIN.gets
       size = @f.readh(2).unpack('S<')[0]
       chk = @f.readh(size)
+      cnt = chk.read(2).unpack('S<')[0]
       d = []
-      until chk.length <= 0 do
+      cnt.times do
         d += [readstr(chk)]
       end
       a="dict #{d}";i="d"
+      p a
+      STDIN.gets
     when 0x96 # push data
       size = @f.readh(2).unpack('S<')[0]
       d = readdata(@f.readh(size))
@@ -142,9 +167,8 @@ class Hsalf
       i = "p"
     when 0x99 # branch always
       size = @f.readh(2).unpack('S<')[0]
-      puts "warning: branch data size != 2" if size != 2
       d = @f.readh(2).unpack('s<')[0]
-      a = "branch always:#{d}(#{d.to_s(16)})"
+      a = "branch always:#{d}(#{d.to_s(16)})->#{(@f.tell+d+1).to_s(16)}"
       i = "ba"
     when 0x9b  # declare function
       size = @f.readh(2).unpack('S<')[0]
@@ -165,12 +189,12 @@ class Hsalf
       end
     when 0x9d # branch If True / if(pop)
       size = @f.readh(2).unpack('S<')[0]
-      puts "warning: branch data size != 2" if size != 2
       d = @f.readh(2).unpack('s<')[0]
-      a = "branch if True off:#{d}(#{d.to_s(16)})"
+      a = "branch if True off:#{d}(#{d.to_s(16)})->#{(@f.tell+d+1).to_s(16)}"
       i = "bt"
     else
       puts "Unknown Action ID #{id}(#{id.to_s(16)})"
+      exit
     end
     return a,i,d
   end #end method
