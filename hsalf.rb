@@ -15,86 +15,54 @@ end
 # Based on file format analysis
 # Refer from http://www.m2osw.com/swf_alexref
 class Hsalf
-  private
-  @f
-  public
+private
+  @f # file object
+  @g # global information
+  
+public
   def initialize(filename, offset=0, size=0)
     @f = File.open(filename, "rb")
     @f.seek(offset, IO::SEEK_SET)
     size = @f.size if size == 0
+    @g = Struct.new(:v,:f).new({},{}) #variable, function
     #@b = f.read(size-offset)
-    #@f.close
+    #@f.close    
+  end
+  
+  def position(num)
+    @f.seek(num, IO::SEEK_SET)
   end
   
   def disas(len=@f.size)
     ori = @f.tell
     while @f.tell < ori+len
-      puts decode()[0]
+      puts decode[0]
     end
   end
-  
-  def debug(argv)
-    # finding how does the scope of these lists
-    s = [] # stack
-    v = {} # variable
-    f = {} # function list
-    dict = [] # dictionary
+
+  def debug(argv=[])
+    frame = Struct.new(:s,:v,:d).new([],{},[]) #stack, variables, dictionary
     loop do
-      a,i,d = decode(dict)
-      if i[0].to_i == 2
-        o1 = s.pop
-        o2 = s.pop
-        case i[1]
-        when '+' then s.push(o2+o1)
-        when '-' then s.push(o2-o1)
-        when '*' then s.push(o2*o1)
-        when '&' then s.push(o2&o1)
-        when '%' then s.push(o2%o1)
-        when '=' then s.push((o2==o1)? true:false)
-        when ']' then v[o2]=o1 # setvariable
-        when 'c'
-          ra = @f.tell
-          @f.seek(f[o1], IO::SEEK_SET)
-          argv = s.pop(o2).reverse
-          puts "call"
-          s.push(debug(argv))
-          puts "return"
-          @f.seek(ra, IO::SEEK_SET)
-        end
-      elsif i[0].to_i == 1
-        o1 = s.pop
-        case i[1]
-        when '~' then s.push(not(o1))
-        when '[' then s.push(v[o1]) # getvariable
-        when 'r' then return o1
-        end
-      elsif i[0] == "e" # end
-        break
-      elsif i[0] == "d" # dictionary
-        dict += d
-      elsif i[0] == "b" # branch
-        if (i[1]=="a")or(i[1]=="t" && s.pop==true)
-          d = d-1 if d<0
-          @f.seek(d, IO::SEEK_CUR)
-        end
-      elsif i[0] == "p" # push
-        s+=d
-      elsif i[0] == "f" # function declare
-        f[d[0]] = d[1] 
-      else
-        puts "Unknown il #{a}->#{i}"
-        exit
+      text,action = decode
+      p text
+      if action=="return"
+        return frame.s.pop
+      elsif action=="end"
+        return nil
       end
-      puts "#{a}:#{s}"
+      action.call(frame)
+      p frame
+      p @g
     end # loop end
   end
   
+  # used for decode()
   def readstr(s) # read until null end
     i = s.index("\x00")
     puts "Warning: no null ended" if i.nil?
     s.read(i+1)[0..-2]
   end
-  def readdata(d, dict) # for push
+  def readdata(d) # for push
     data = []
     until d.length <=0 do
       type = d.read(1).ord
@@ -121,250 +89,208 @@ class Hsalf
         data += d.read(4).unpack('L<')
       when 8 # dictionary
         ref = d.read(1).unpack('C')[0]
-        data += [dict.nil?? "dict[#{ref}]" : dict[ref]]
+        data += [[ref]]
       when 9 # large dictionary
         ref = d.read(2).unpack('S')[0]
-        data += [dict.nil?? "dict[#{ref}]" : dict[ref]]
+        data += [[ref]]
       else
         puts "Unknown Data Type #{type}(#{type.to_s(16)})"
       end
     end
     return data
   end
+  def isnum(num)
+    num.class==Fixnum || num.class==Float #|| num.class==Bignum
+  end
   
-  def decode(dict=nil)
-    #a:action i:il(intermidiate language) d:data
-    #size:action length #chk:action structure
+  def decode()
+    #t:action.to_s a:action
+    #size:action length #data:action structure
     print "[#{@f.tell.to_s(16)}] "
     id = @f.readh(1).ord
     case id # Action identifier
-    when 0x0 then a="end";i="e"
-    when 0x4
-      puts "Not implemented #{id}(next frame)";exit
-    when 0x5
-      puts "Not implemented #{id}(previous frame)";exit
-    when 0x6
-      puts "Not implemented #{id}(play)";exit
-    when 0x7
-      puts "Not implemented #{id}(stop)";exit
-    when 0x8
-      puts "Not implemented #{id}(toggle quality)";exit
-    when 0x9
-      puts "Not implemented #{id}(stop sound)";exit
-    when 0xa then a="add";i="2+" # pop + pop => push
-    when 0xb then a="subtract";i="2-" # pop - pop => push
-    when 0xc then a="multiply";i="2*" # pop * pop => push
-    when 0xd then a="divide";i="2/" # pop / pop => push
-    when 0xe then a="equal";i="2=" # pop == pop => push
-    when 0xf
-      puts "Not implemented #{id}(less than)";exit
-    when 0x10
-      puts "Not implemented #{id}(logical and)";exit
-    when 0x11
-      puts "Not implemented #{id}(logical or)";exit
-    when 0x12 then a="logical not";i="1~" # ~pop => push
-    when 0x13
-      puts "Not implemented #{id}(string equal)";exit
-    when 0x14
-      puts "Not implemented #{id}(string length)";exit
-    when 0x15
-      puts "Not implemented #{id}(substring)";exit
-    when 0x17
-      puts "Not implemented #{id}(pop)";exit
-    when 0x18
-      puts "Not implemented #{id}(integral part)";exit
-    when 0x1c then a="getvariable";i="1[" # *pop => push
-    when 0x1d then a="setvariable";i="2]" # pop => *pop
-    when 0x20
-      puts "Not implemented #{id}(set target(dynamic))";exit
-    when 0x21 then a="concatenate string";i="2+" # pop +(string) pop => push
-    when 0x22
-      puts "Not implemented #{id}(get property)";exit
-    when 0x23
-      puts "Not implemented #{id}(set property)";exit
-    when 0x24
-      puts "Not implemented #{id}(duplicate sprite)";exit
-    when 0x25
-      puts "Not implemented #{id}(remove sprite)";exit
-    when 0x26
-      puts "Not implemented #{id}(trace)";exit
-    when 0x27
-      puts "Not implemented #{id}(start drag)";exit
-    when 0x28
-      puts "Not implemented #{id}(stop drag)";exit
-    when 0x29
-      puts "Not implemented #{id}(string less than)";exit
-    when 0x2a
-      puts "Not implemented #{id}(throw)";exit
-    when 0x2b
-      puts "Not implemented #{id}(cast object)";exit
-    when 0x2c
-      puts "Not implemented #{id}(implements)";exit
-    when 0x2d
-      puts "Not implemented #{id}(FSCommand2)";exit
-    when 0x30
-      puts "Not implemented #{id}(random)";exit
-    when 0x31
-      puts "Not implemented #{id}(string length(multi-byte))";exit
-    when 0x32
-      puts "Not implemented #{id}(ord)";exit
-    when 0x33
-      puts "Not implemented #{id}(chr)";exit
-    when 0x34
-      puts "Not implemented #{id}(get timer)";exit
-    when 0x35
-      puts "Not implemented #{id}(substring(multi-byte))";exit
-    when 0x36
-      puts "Not implemented #{id}(ord(multi-byte))";exit
-    when 0x37
-      puts "Not implemented #{id}(chr)";exit
-    when 0x3a
-      puts "Not implemented #{id}(delete)";exit
-    when 0x3b
-      puts "Not implemented #{id}(delete all)";exit
-    when 0x3c then a="setlocalvariable";i="2]" # pop => *pop
-    when 0x3d then a="call function";i="2c" # pop(pop(argc): pops(argv)) => push
-    when 0x3e then a="return";i="1r" # return pop | push(caller)
-    when 0x3f then a="modulo";i="2%" # pop % pop => push
-    when 0x40
-      puts "Not implemented #{id}(new)";exit
-    when 0x41
-      puts "Not implemented #{id}(declare localvariable)";exit
-    when 0x42
-      puts "Not implemented #{id}(declare array)";exit
-    when 0x43
-      puts "Not implemented #{id}(declare object)";exit
-    when 0x44
-      puts "Not implemented #{id}(type of)";exit
-    when 0x45
-      puts "Not implemented #{id}(get target)";exit
-    when 0x46
-      puts "Not implemented #{id}(enumerate)";exit
-    when 0x47 then a="add(typed)";i="2+" # pop + pop => push
-    when 0x48
-      puts "Not implemented #{id}(less than(typed))";exit
-    when 0x49 then a="equal(typed)";i="2=" # pop == pop => push
-    when 0x4a
-      puts "Not implemented #{id}(number)";exit
-    when 0x4b
-      puts "Not implemented #{id}(strin)";exit
-    when 0x4c
-      puts "Not implemented #{id}(duplicate)";exit
-    when 0x4d
-      puts "Not implemented #{id}(swap)";exit
-    when 0x4e
-      puts "Not implemented #{id}(get member)";exit
-    when 0x4f
-      puts "Not implemented #{id}(set member)";exit
-    when 0x50
-      puts "Not implemented #{id}(increment)";exit
-    when 0x51
-      puts "Not implemented #{id}(decrement)";exit
-    when 0x52
-      puts "Not implemented #{id}(call method)";exit
-    when 0x53
-      puts "Not implemented #{id}(new method)";exit
-    when 0x54
-      puts "Not implemented #{id}(instance of)";exit
-    when 0x55
-      puts "Not implemented #{id}(enumerate object)";exit
-    when 0x60 then a="and";i="2&" # pop + pop => push
-    when 0x61
-      puts "Not implemented #{id}(bit or)";exit
-    when 0x62
-      puts "Not implemented #{id}(xor)";exit
-    when 0x63
-      puts "Not implemented #{id}(shift left)";exit
-    when 0x64
-      puts "Not implemented #{id}(shift right)";exit
-    when 0x65
-      puts "Not implemented #{id}(shift right unsigned)";exit
-    when 0x66
-      puts "Not implemented #{id}(strict equal)";exit
-    when 0x67
-      puts "Not implemented #{id}(greater than)";exit
-    when 0x68
-      puts "Not implemented #{id}(string greater than)";exit
-    when 0x69
-      puts "Not implemented #{id}(extends)";exit
-    when 0x81
-      puts "Not implemented #{id}(goto frame)";exit
-    when 0x83
-      puts "Not implemented #{id}(get url)";exit
-    when 0x87
-      puts "Not implemented #{id}(store register)";exit
+    when 0x0 then t="end";a="end"
+    when 0x4 then puts "Not implemented #{id}(next frame)";exit
+    when 0x5 then puts "Not implemented #{id}(previous frame)";exit
+    when 0x6 then puts "Not implemented #{id}(play)";exit
+    when 0x7 then puts "Not implemented #{id}(stop)";exit
+    when 0x8 then puts "Not implemented #{id}(toggle quality)";exit
+    when 0x9 then puts "Not implemented #{id}(stop sound)";exit
+    when 0xa then t="add";      a=Proc.new{|f| o=f.s.pop;f.s.push(f.s.pop+o)}
+    when 0xb then t="subtract"; a=Proc.new{|f| o=f.s.pop;f.s.push(f.s.pop-o)}
+    when 0xc then t="multiply"; a=Proc.new{|f| o=f.s.pop;f.s.push(f.s.pop*o)}
+    when 0xd then t="divide";   a=Proc.new{|f| o=f.s.pop;f.s.push(f.s.pop/o)}
+    when 0xe then t="equal";    a=Proc.new{|f| f.s.push((f.s.pop==f.s.pop)?1:0)}
+    when 0xf then puts "Not implemented #{id}(less than)";exit
+    when 0x10 then puts "Not implemented #{id}(logical and)";exit
+    when 0x11 then puts "Not implemented #{id}(logical or)";exit
+    when 0x12 then t="logical not";a=Proc.new{|f| f.s.push(not(f.s.pop!=0)?1:0)}
+    when 0x13 then puts "Not implemented #{id}(string equal)";exit
+    when 0x14 then puts "Not implemented #{id}(string length)";exit
+    when 0x15 then puts "Not implemented #{id}(substring)";exit
+    when 0x17 then puts "Not implemented #{id}(pop)";exit
+    when 0x18 then puts "Not implemented #{id}(integral part)";exit
+    when 0x1c then t="getvariable"
+      a=Proc.new do |f|      
+        var_nm = f.s.pop
+        if !f.v[var_nm].nil? then f.s.push(f.v[var_nm])
+        elsif !@g.v[var_nm].nil? then f.s.push(@g.v[var_nm]) 
+        else
+          p "[debug] fail to get variable #{var_nm}"
+          var = STDIN.gets
+          f.s.push(var.chomp)
+        end
+      end
+    when 0x1d then t="setvariable"
+      a=Proc.new do |f|
+        var_nm,o = f.s.pop(2)
+        if !f.v[var_nm].nil? then f.v[var_nm]=o
+        else @g.v[var_nm]=o end
+      end
+    when 0x20 then puts "Not implemented #{id}(set target(dynamic))";exit
+    when 0x21 then puts "Not implemented #{id}(concatenate string)";exit # pop +(string) pop => push
+    when 0x22 then puts "Not implemented #{id}(get property)";exit
+    when 0x23 then puts "Not implemented #{id}(set property)";exit
+    when 0x24 then puts "Not implemented #{id}(duplicate sprite)";exit
+    when 0x25 then puts "Not implemented #{id}(remove sprite)";exit
+    when 0x26 then puts "Not implemented #{id}(trace)";exit
+    when 0x27 then puts "Not implemented #{id}(start drag)";exit
+    when 0x28 then puts "Not implemented #{id}(stop drag)";exit
+    when 0x29 then puts "Not implemented #{id}(string less than)";exit
+    when 0x2a then puts "Not implemented #{id}(throw)";exit
+    when 0x2b then puts "Not implemented #{id}(cast object)";exit
+    when 0x2c then puts "Not implemented #{id}(implements)";exit
+    when 0x2d then puts "Not implemented #{id}(FSCommand2)";exit
+    when 0x30 then puts "Not implemented #{id}(random)";exit
+    when 0x31 then puts "Not implemented #{id}(string length(multi-byte))";exit
+    when 0x32 then puts "Not implemented #{id}(ord)";exit
+    when 0x33 then puts "Not implemented #{id}(chr)";exit
+    when 0x34 then puts "Not implemented #{id}(get timer)";exit
+    when 0x35 then puts "Not implemented #{id}(substring(multi-byte))";exit
+    when 0x36 then puts "Not implemented #{id}(ord(multi-byte))";exit
+    when 0x37 then puts "Not implemented #{id}(chr)";exit
+    when 0x3a then puts "Not implemented #{id}(delete)";exit
+    when 0x3b then puts "Not implemented #{id}(delete all)";exit
+#TODO setlocalvariable vs declarelocalvariable
+    when 0x3c then t="setlocalvariable";a=Proc.new{|f| o=f.s.pop;f.v[f.s.pop]=o}
+    when 0x3d then t = "call" # call function 
+      a = Proc.new do |f|
+        argc, fun_nm = f.s.pop(2)
+        fun_pos = @g.f[fun_nm][0]
+        retaddr = @f.tell
+        @f.seek(fun_pos, IO::SEEK_SET)
+# TODO handle argv
+# pop(pop(argc): pops(argv)) => push        
+        ret=debug([])
+        f.s.push(ret) if !ret.nil?
+        @f.seek(retaddr, IO::SEEK_SET)
+      end
+    when 0x3e then t="return";a="return" # return pop | push(caller)
+    when 0x3f then t="modulo";a=Proc.new{|f| o=f.s.pop;f.s.push(f.s.pop%o)} 
+    when 0x40 then puts "Not implemented #{id}(new)";exit
+    when 0x41 then puts "Not implemented #{id}(declare localvariable)";exit
+    when 0x42 then puts "Not implemented #{id}(declare array)";exit
+    when 0x43 then puts "Not implemented #{id}(declare object)";exit
+    when 0x44 then puts "Not implemented #{id}(type of)";exit
+    when 0x45 then puts "Not implemented #{id}(get target)";exit
+    when 0x46 then puts "Not implemented #{id}(enumerate)";exit
+    when 0x47 then t="add(typed)"
+      a=Proc.new do |f| 
+        o2,o1 = f.s.pop(2)
+        if isnum(o1) and isnum(o2)
+          f.s.push(o1+o2)
+        else
+          f.s.push(o1.to_s+o2.to_s)
+        end
+      end
+    when 0x48 then puts "Not implemented #{id}(less than(typed))";exit
+    when 0x49 then t="equal";a=Proc.new{|f| f.s.push((f.s.pop==f.s.pop)?1:0)}
+    when 0x4a then puts "Not implemented #{id}(number)";exit
+    when 0x4b then puts "Not implemented #{id}(strin)";exit
+    when 0x4c then puts "Not implemented #{id}(duplicate)";exit
+    when 0x4d then puts "Not implemented #{id}(swap)";exit
+    when 0x4e then puts "Not implemented #{id}(get member)";exit
+    when 0x4f then puts "Not implemented #{id}(set member)";exit
+    when 0x50 then puts "Not implemented #{id}(increment)";exit
+    when 0x51 then puts "Not implemented #{id}(decrement)";exit
+    when 0x52 then puts "Not implemented #{id}(call method)";exit
+    when 0x53 then puts "Not implemented #{id}(new method)";exit
+    when 0x54 then puts "Not implemented #{id}(instance of)";exit
+    when 0x55 then puts "Not implemented #{id}(enumerate object)";exit
+    when 0x60 then puts "Not implemented #{id}(and)";exit # pop + pop => push
+    when 0x61 then puts "Not implemented #{id}(bit or)";exit
+    when 0x62 then puts "Not implemented #{id}(xor)";exit
+    when 0x63 then puts "Not implemented #{id}(shift left)";exit
+    when 0x64 then puts "Not implemented #{id}(shift right)";exit
+    when 0x65 then puts "Not implemented #{id}(shift right unsigned)";exit
+    when 0x66 then puts "Not implemented #{id}(strict equal)";exit
+    when 0x67 then puts "Not implemented #{id}(greater than)";exit
+    when 0x68 then puts "Not implemented #{id}(string greater than)";exit
+    when 0x69 then puts "Not implemented #{id}(extends)";exit
+    when 0x81 then puts "Not implemented #{id}(goto frame)";exit
+    when 0x83 then puts "Not implemented #{id}(get url)";exit
+    when 0x87 then puts "Not implemented #{id}(store register)";exit
     when 0x88 # declare dictionary
       size = @f.readh(2).unpack('S<')[0]
-      chk = @f.readh(size)
-      cnt = chk.read(2).unpack('S<')[0]
-      d = []
+      data = @f.readh(size)
+      cnt = data.read(2).unpack('S<')[0]
+      dict = []
       cnt.times do
-        d += [readstr(chk)]
+        dict += [readstr(data)]
       end
-      a="dict #{d}";i="d"
-    when 0x89
-      puts "Not implemented #{id}(strict mode)";exit
-    when 0x8a
-      puts "Not implemented #{id}(wait for frame)";exit
-    when 0x8b
-      puts "Not implemented #{id}(set target)";exit
-    when 0x8c
-      puts "Not implemented #{id}(goto label)";exit
-    when 0x8d
-      puts "Not implemented #{id}(wait for frame(dynamic))";exit
-    when 0x8e
-      puts "Not implemented #{id}(declare function v7)";exit
-    when 0x8f
-      puts "Not implemented #{id}(try)";exit
-    when 0x94
-      puts "Not implemented #{id}(with)";exit
+      t = "dict ["+dict.join(',')+"]"
+      a = Proc.new do |f|
+        f.d += dict
+      end
+    when 0x89 then puts "Not implemented #{id}(strict mode)";exit
+    when 0x8a then puts "Not implemented #{id}(wait for frame)";exit
+    when 0x8b then puts "Not implemented #{id}(set target)";exit
+    when 0x8c then puts "Not implemented #{id}(goto label)";exit
+    when 0x8d then puts "Not implemented #{id}(wait for frame(dynamic))";exit
+    when 0x8e then puts "Not implemented #{id}(declare function v7)";exit
+    when 0x8f then puts "Not implemented #{id}(try)";exit
+    when 0x94 then puts "Not implemented #{id}(with)";exit
     when 0x96 # push data
       size = @f.readh(2).unpack('S<')[0]
-      d = readdata(@f.readh(size), dict)
-      a = "push #{d}"
-      i = "p"
+      data = readdata(@f.readh(size))
+      t = "push ["+data.join(',')+"]"
+      a = Proc.new do |f|
+        data.map! {|dd| (dd.class==Array) ? f.d[dd[0]] : dd} #dictionary check
+        f.s += data
+      end
     when 0x99 # branch always
       size = @f.readh(2).unpack('S<')[0]
-      d = @f.readh(2).unpack('s<')[0]
-      a = "branch always:#{d}(#{d.to_s(16)})->#{(@f.tell+d).to_s(16)}"
-      i = "ba"
-    when 0x9a
-      puts "Not implemented #{id}(get url2)";exit
+      data = @f.readh(2).unpack('s<')[0]
+      t = "branch always ->#{(@f.tell+data).to_s(16)}"
+      a = Proc.new {@f.seek(data, IO::SEEK_CUR)}
+    when 0x9a then puts "Not implemented #{id}(get url2)";exit
     when 0x9b  # declare function
       size = @f.readh(2).unpack('S<')[0]
-      chk = @f.readh(size)
-      fun_nm = readstr(chk)
-      argc = chk.read(2).unpack('S<')[0]
+      data = @f.readh(size)
+      fun_nm = readstr(data)
+#TODO handle argv
+      argc = data.read(2).unpack('S<')[0]
       argv = []
-      argc.times{argv+=[readstr(chk)]}
-      fun_len = chk.read(2).unpack('S<')[0]
-      a = "Func(#{fun_nm}), argc:#{argc}, fun_len:#{fun_len}"
-      i = "f"
-      d = [fun_nm,@f.tell]
-      if isdebug==0 # on disassemble look into
-        p "Func(#{fun_nm}), argc:#{argc}, fun_len:#{fun_len} <<"
-        disas(fun_len)
-      else # on debug skip
+      argc.times{argv+=[readstr(data)]}
+      
+      fun_len = data.read(2).unpack('S<')[0]
+      fun_pos = @f.tell
+      t = "func(#{fun_nm}), argc:#{argc}, fun_pos:#{fun_pos.to_s(16)} fun_len:#{fun_len}"
+      a = Proc.new do |f|
+        @g.f[fun_nm]=[fun_pos,argc,argv]
         @f.seek(fun_len, IO::SEEK_CUR)
       end
     when 0x9d # branch If True / if(pop)
       size = @f.readh(2).unpack('S<')[0]
-      d = @f.readh(2).unpack('s<')[0]
-      a = "branch if True off:#{d}(#{d.to_s(16)})->#{(@f.tell+d).to_s(16)}"
-      i = "bt"
-    when 0x9e
-      puts "Not implemented #{id}(call frame)";exit
-    when 0x9f
-      puts "Not implemented #{id}(goto expr)";exit
+      data = @f.readh(2).unpack('s<')[0]
+      t = "branch if True ->#{(@f.tell+data).to_s(16)}"
+      a = Proc.new {|f| @f.seek(data, IO::SEEK_CUR) if f.s.pop!=0}
+    when 0x9e then puts "Not implemented #{id}(call frame)";exit
+    when 0x9f then puts "Not implemented #{id}(goto expr)";exit
     else
       puts "Unknown Action ID #{id}(#{id.to_s(16)})"
       exit
     end
-    return a,i,d
+    return t,a
   end #end method
 end #end class
-
-#f = Hsalf.new("flashenc.swf",392)
-f = Hsalf.new("flashenc.swf",0x14b)
-f.disas
-#f.debug([])
